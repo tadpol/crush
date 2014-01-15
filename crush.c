@@ -1,238 +1,163 @@
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
 
-
-enum crush_parse_state_e {
-    crush_state_waiting_for_cmd = 0,
-    crush_state_type,
-    crush_state_length_high,
-    crush_state_length_low,
-    crush_state_addr,
-    crush_state_wbk_high,
-    crush_state_wbk_low,
-    crush_state_checksum,
-
+enum crush_commands_e {
+    crush_cmd_req_write = 1,
+    crush_cmd_rpl_write = 9,
+    crush_cmd_req_read = 2,
+    crush_cmd_rpl_read = 10,
+    crush_cmd_req_jump = 3,
+    crush_cmd_rpl_jump = 11,
+    crush_cmd_msg_indicate = 4,
 };
-typedef enum crush_parse_state_e crush_parse_state_t;
-
-enum crush_status_e {
-    crush_status_parse_error = 1,
-    crush_status_checksum_error = 1<<1,
+enum crush_parser_state_e {
+    crush_ps_looking_for_b,
+    crush_ps_get_cmd,
+    crush_ps_get_length,
+    crush_ps_get_rest,
 };
+typedef enum crush_parser_state_e crush_parser_state_t;
 
-uint16_t crush_status=0;
-uint8_t crush_wbk[80];
-
-static struct crush_state_s {
-    crush_parse_state_t state;
-    uint8_t cmd;
-    uint8_t type;
-    uint8_t checksum;
-    uint16_t length;
-    uint32_t addr;
-    uint8_t *wbk;
+struct crush_state_s {
+    crush_parser_state_t state;
+    uint8_t buffer[40];
+    uint8_t *wkbk;
+    uint8_t length;
 } crush = {
-    .state = crush_state_waiting_for_cmd,
+    .state = crush_ps_looking_for_b,
 };
 
-void crush_do_cmd(uint8_t cmd, uint64_t addr, uint8_t *data, int length);
-void crush_send(uint8_t cmd, uint32_t addr, uint8_t *data, int dlen);
-void crush_indicate(void *addr, void* data, int length);
+uint16_t crush_fletcher16(void* data, size_t length);
 
-static int crush_fromnibble(int c)
+void crush_send(uint8_t cmd, void* addr, void* data, size_t dlen)
 {
-    if( c >= '0' && c <= '9' ) c -= '0';
-    else if( c >= 'a' && c <= 'f') c = (c - 'a') + 10;
-    else if( c >= 'A' && c <= 'F') c = (c - 'A') + 10;
-    else c = 0;
+    uint8_t buf[40];
+    uint8_t *p = buf;
+    ptrdiff_t a = (ptrdiff_t)addr, m=0;
+    int alen;
+    uint16_t cksm;
+
+    for(alen=1; alen > 0xf; alen++) {
+
+        if((a & m) == a) break;
+    }
+
+    *p++ = (cmd << 4) | alen;
+    p++; // length will get filled later
+
+    // addr
+
+    memcpy(p, data, dlen);
+
+    buf[1] = (p - buf) + 2;
+
+    cksm = crush_fletcher16(buf, buf[1] - 2);
+    *p++ = cksm >> 8;
+    *p = cksm;
+
+    put(buf);
+}
+
+int crush_validate_checksum(void)
+{
+    uint16_t lcksm, ccksm;
+    uint8_t len = crush.buffer[1];
+
+    lcksm  = crush.buffer[len-2] << 8;
+    lcksm |= crush.buffer[len-1];
+
+    ccksm = crush_fletcher16(crush.buffer, len - 2);
+
+    return lcksm == ccksm;
+}
+
+void* crush_get_address(void)
+{
+    ptrdiff_t addr=0;
+    // TODO verify that it fits.
+    int alen = crush.buffer[0] & 0xf;
+    uint8_t *p = &crush.buffer[2];
+    for(; alen > 0; alen--,p++) {
+        addr <<= 8;
+        addr |= *p;
+    }
+    return (void*)addr;
+}
+
+void crush_do_cmd(void)
+{
+    uint8_t cmd = crush.buffer[0] >> 4;
+    uint8_t alen = crush.buffer[0] & 0xf;
+    uint8_t *addr = crush_get_address();
+    uint8_t *data = crush.buffer + 2 + alen;
+    size_t dlen = crush.buffer[1] - 4 - alen;
+
+    if(cmd == crush_cmd_req_write) {
+        memcpy(addr, data, dlen);
+        crush_send(crush_cmd_rpl_write, addr, NULL, 0);
+
+    } else if(cmd == crush_cmd_req_read) {
+        unsigned chunk;
+        unsigned readlen=0;
+        /* Read the requested length */
+        for(; dlen > 0; dlen--, data++) {
+            readlen <<= 8;
+            readlen |= *data;
+        }
+
+        /* now read */
+        for(; readlen > 0; ) {
+            chunk = (readlen>34)?34:readlen;
+
+            crush_send(crush_cmd_rpl_read, addr, (uint8_t*)addr, chunk);
+
+            readlen -= chunk;
+            addr += chunk;
+        }
+
+    } else if(cmd == crush_cmd_req_jump) {
+        ((void(*)(void))addr)();
+        crush_send(crush_cmd_rpl_jump, addr, NULL, 0);
+    }
+}
+
+int crush_inchar(int c)
+{
+    if(crush.state == crush_ps_looking_for_b) {
+        if(c == '\b') {
+            crush.state = crush_ps_get_cmd;
+            crush.wkbk = crush.buffer;
+            c=-1;
+        }
+
+    }else if(crush.state == crush_ps_get_cmd) {
+        *crush.wkbk++ = c;
+        crush.state = crush_ps_get_length;
+        c=-1;
+
+    }else if(crush.state == crush_ps_get_cmd) {
+        *crush.wkbk++ = c;
+        crush.length = c - 2; /* subtract the two we already have */
+        crush.state = crush_ps_get_rest;
+        c=-1;
+
+    }else if(crush.state == crush_ps_get_rest) {
+        *crush.wkbk++ = c;
+        crush.length--;
+        if(crush.length == 0 && crush_validate_checksum()) {
+            crush_do_cmd();
+            crush.state = crush_ps_looking_for_b;
+        }
+        c=-1;
+    } 
+
     return c;
 }
 
-void crush_parse_char(int c)
-{
-    if(crush.state == crush_state_waiting_for_cmd) {
-        crush.type = 0;
-        crush.checksum = 0;
-        crush.length = 0;
-        crush.addr = 0;
-        crush.state = crush_state_type;
-        if(c == 'W' || c == 'R' || c == 'J') {
-            crush.cmd = c;
-            crush.checksum += c;
-        } else {
-            crush.state = crush_state_waiting_for_cmd;
-            /* or not, just keep eating then. */
-        }
-    } else if(crush.state == crush_state_type) {
-        if(c >= '1' && c <= '3') {
-            crush.type = c - '0';
-            crush.checksum += c;
-            crush.state = crush_state_length_high;
-        } else {
-            crush.state = crush_state_waiting_for_cmd;
-            crush_status |= crush_status_parse_error;
-        }
-    } else if(crush.state == crush_state_length_high) {
-        if(isxdigit(c)) {
-            crush.length = crush_fromnibble(c) << 4;
-            crush.checksum += c;
-            crush.state = crush_state_length_low;
-        } else {
-            crush.state = crush_state_waiting_for_cmd;
-            crush_status |= crush_status_parse_error;
-        }
-    } else if(crush.state == crush_state_length_low) {
-        if(isxdigit(c)) {
-            crush.length |= crush_fromnibble(c);
-            crush.checksum += c;
-            crush.state = crush_state_addr;
-        } else {
-            crush.state = crush_state_waiting_for_cmd;
-            crush_status |= crush_status_parse_error;
-        }
-    } else if(crush.state == crush_state_addr) {
-        if(isxdigit(c)) {
-            if(crush.type > 0) {
-                crush.addr <<= 4;
-                crush.addr |= crush_fromnibble(c);
-                crush.checksum += c;
-                crush.length --;
-                crush.type --;
-            } else {
-                crush.state = crush_state_wbk_high;
-                crush.wbk = crush_wbk;
-            }
-        } else {
-            crush.state = crush_state_waiting_for_cmd;
-            crush_status |= crush_status_parse_error;
-        }
-    } else if(crush.state == crush_state_wbk_high) {
-        if(isxdigit(c)) {
-            *(crush.wbk) = crush_fromnibble(c) << 4;
-            crush.checksum += c;
-            crush.length --;
-            crush.state = crush_state_wbk_low;
-        } else {
-            crush.state = crush_state_waiting_for_cmd;
-            crush_status |= crush_status_parse_error;
-        }
-    } else if(crush.state == crush_state_wbk_low) {
-        if(isxdigit(c)) {
-            *(crush.wbk) |= crush_fromnibble(c);
-            crush.checksum += c;
-            crush.length --;
-            crush.wbk ++;
-
-            if(crush.length == 0) {
-                crush.state = crush_state_checksum;
-            } else {
-                crush.state = crush_state_wbk_high;
-            }
-        } else {
-            crush.state = crush_state_waiting_for_cmd;
-            crush_status |= crush_status_parse_error;
-        }
-    } else if(crush.state == crush_state_checksum) {
-        /* The sum of all the parts and the checksum should result in 0 */
-        crush.state = crush_state_waiting_for_cmd;
-        if(crush.checksum == 0) {
-            crush_do_cmd(crush.cmd, crush.addr, crush_wbk, (crush.wbk - crush_wbk) -1);
-        } else {
-            crush_status |= crush_status_checksum_error;
-        }
-    }
-}
-
-void crush_do_cmd(uint8_t cmd, uint64_t addr, uint8_t *data, int length)
-{
-    if(cmd == 'W') {
-        memcpy((void*)addr, data, length);
-        crush_send('w', addr, NULL, 0);
-    } else if(cmd == 'R') {
-        unsigned chunk;
-        unsigned dlen=0;
-        /* Decode Request length from data */
-        for(; length>0; length--, data++) {
-            dlen <<=4;
-            dlen = crush_fromnibble(*data);
-        }
-
-        /* Now read data in chunks. */
-        for(; dlen > 0; ) {
-            chunk = (dlen>34)?34:dlen; // 34 bytes with type 3, gives 80 char lines.
-
-            crush_send('r', addr, (uint8_t*)addr, chunk);
-
-            dlen -= chunk;
-            addr += chunk;
-        }
-    } else if(cmd == 'J') {
-        uint16_t retval;
-        retval = ((int(*)())addr)();
-        crush_send('j', addr, (uint8_t*)&retval, sizeof(uint16_t));
-    }
-}
-
-void crush_send(uint8_t cmd, uint32_t addr, uint8_t *data, int dlen)
-{
-    static const char nibbles[16] = "0123456789ABCDEF";
-    uint8_t buf[80];
-    uint8_t *p = buf;
-    uint8_t type;
-    uint8_t checksum = 0;
-    int length;
-
-    /* How big does it need to be to hold the address? */
-    type = 3;
-    if((addr & 0xffffff) == addr) type = 2; /* if it fits in 24 */
-    if((addr & 0xffff) == addr) type = 1; /* if it fits in 16 */
-
-    *p = cmd, checksum += *p++;
-    *p = type, checksum += *p++;
-
-    length = (type + 1) * 2; /* length of the address */
-    length += dlen * 2; /* Length of the data */
-    length += 2; /* The checksum */
-
-    *p = nibbles[(length >> 4) & 0xf], checksum += *p++;
-    *p = nibbles[length & 0xf], checksum += *p++;
-
-    switch(type) {
-        case 3:
-            *p = nibbles[(addr >> 28) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 24) & 0xf], checksum += *p++;
-        case 2:
-            *p = nibbles[(addr >> 20) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 16) & 0xf], checksum += *p++;
-        case 1:
-            *p = nibbles[(addr >> 12) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 8) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 4) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 0) & 0xf], checksum += *p++;
-            break;
-    }
-
-    for(; dlen > 0; dlen--, data++) {
-        *p = nibbles[(*data >> 4) & 0xf], checksum += *p++;
-        *p = nibbles[*data & 0xf], checksum += *p++;
-    }
-    *p = nibbles[(checksum >> 4) & 0xf], checksum += *p++;
-    *p = nibbles[checksum & 0xf], checksum += *p++;
-
-    *p++ = '\n';
-    *p = '\0';
-
-    /* low level send */
-    puts((const char*)buf);
-}
-
-void crush_indicate(void *addr, void* data, int length)
-{
-    crush_send('I', (uint32_t)addr, data, length);
-}
 
 /* vim: set ai cin et sw=4 ts=4 : */
