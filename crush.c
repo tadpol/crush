@@ -40,7 +40,7 @@ static struct crush_state_s {
 };
 
 void crush_do_cmd(uint8_t cmd, uint64_t addr, uint8_t *data, int length);
-void crush_send(uint8_t cmd, uint8_t type, uint32_t addr, uint8_t *data, int dlen);
+void crush_send(uint8_t cmd, uint32_t addr, uint8_t *data, int dlen);
 void crush_indicate(void *addr, void* data, int length);
 
 static int crush_fromnibble(int c)
@@ -151,7 +151,7 @@ void crush_do_cmd(uint8_t cmd, uint64_t addr, uint8_t *data, int length)
 {
     if(cmd == 'W') {
         memcpy((void*)addr, data, length);
-        crush_send('w', 3, addr, NULL, 0);
+        crush_send('w', addr, NULL, 0);
     } else if(cmd == 'R') {
         unsigned chunk;
         unsigned dlen=0;
@@ -165,7 +165,7 @@ void crush_do_cmd(uint8_t cmd, uint64_t addr, uint8_t *data, int length)
         for(; dlen > 0; ) {
             chunk = (dlen>34)?34:dlen; // 34 bytes with type 3, gives 80 char lines.
 
-            crush_send('r', 3, addr, (uint8_t*)addr, chunk);
+            crush_send('r', addr, (uint8_t*)addr, chunk);
 
             dlen -= chunk;
             addr += chunk;
@@ -173,17 +173,23 @@ void crush_do_cmd(uint8_t cmd, uint64_t addr, uint8_t *data, int length)
     } else if(cmd == 'J') {
         uint16_t retval;
         retval = ((int(*)())addr)();
-        crush_send('j', 3, addr, (uint8_t*)&retval, sizeof(uint16_t));
+        crush_send('j', addr, (uint8_t*)&retval, sizeof(uint16_t));
     }
 }
 
-void crush_send(uint8_t cmd, uint8_t type, uint32_t addr, uint8_t *data, int dlen)
+void crush_send(uint8_t cmd, uint32_t addr, uint8_t *data, int dlen)
 {
     static const char nibbles[16] = "0123456789ABCDEF";
     uint8_t buf[80];
     uint8_t *p = buf;
+    uint8_t type;
     uint8_t checksum = 0;
     int length;
+
+    /* How big does it need to be to hold the address? */
+    type = 3;
+    if((addr & 0xffffff) == addr) type = 2; /* if it fits in 24 */
+    if((addr & 0xffff) == addr) type = 1; /* if it fits in 16 */
 
     *p = cmd, checksum += *p++;
     *p = type, checksum += *p++;
@@ -226,7 +232,7 @@ void crush_send(uint8_t cmd, uint8_t type, uint32_t addr, uint8_t *data, int dle
 
 void crush_indicate(void *addr, void* data, int length)
 {
-    crush_send('I', 3, (uint32_t)addr, data, length);
+    crush_send('I', (uint32_t)addr, data, length);
 }
 
 /* vim: set ai cin et sw=4 ts=4 : */
