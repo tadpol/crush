@@ -37,12 +37,12 @@ static struct crush_state_s {
     uint32_t addr;
     uint8_t *wbk;
 } crush = {
-    .state = crush_state_waiting_for_cmd,
+    .state = crush_state_waiting_for_b,
 };
 
 void crush_do_cmd(uint8_t cmd, uint64_t addr, uint8_t *data, int length);
 void crush_send(uint8_t cmd, uint32_t addr, uint8_t *data, int dlen);
-void crush_indicate(void *addr, void* data, int length);
+void crush_indicate(void *addr, int length);
 
 static int crush_fromnibble(int c)
 {
@@ -185,59 +185,80 @@ void crush_do_cmd(uint8_t cmd, uint64_t addr, uint8_t *data, int length)
 void crush_send(uint8_t cmd, uint32_t addr, uint8_t *data, int dlen)
 {
     static const char nibbles[16] = "0123456789ABCDEF";
-    uint8_t buf[80];
-    uint8_t *p = buf;
-    uint8_t type;
+    uint8_t type,p;
     uint8_t checksum = 0;
     int length;
 
     /* How big does it need to be to hold the address? */
-    type = '3';
-    if((addr & 0xffffff) == addr) type = '2'; /* if it fits in 24 */
-    if((addr & 0xffff) == addr) type = '1'; /* if it fits in 16 */
+    type = 3;
+    if((addr & 0xffffff) == addr) type = 2; /* if it fits in 24 */
+    if((addr & 0xffff) == addr) type = 1; /* if it fits in 16 */
 
-    *p = cmd, checksum += *p++;
-    *p = type, checksum += *p++;
+    putchar('\b');
+    putchar(cmd); checksum += cmd;
+    putchar(type+'0'); checksum += type+'0';
 
     length = (type + 1) * 2; /* length of the address */
     length += dlen * 2; /* Length of the data */
     length += 2; /* The checksum */
 
-    *p = nibbles[(length >> 4) & 0xf], checksum += *p++;
-    *p = nibbles[length & 0xf], checksum += *p++;
+    p = nibbles[(length >> 4) & 0xf];
+    putchar(p); checksum += p;
+    p = nibbles[length & 0xf];
+    putchar(p); checksum += p;
 
     switch(type) {
-        case '3':
-            *p = nibbles[(addr >> 28) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 24) & 0xf], checksum += *p++;
-        case '2':
-            *p = nibbles[(addr >> 20) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 16) & 0xf], checksum += *p++;
-        case '1':
-            *p = nibbles[(addr >> 12) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 8) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 4) & 0xf], checksum += *p++;
-            *p = nibbles[(addr >> 0) & 0xf], checksum += *p++;
+        case 3:
+            p = nibbles[(addr >> 28) & 0xf];
+            putchar(p); checksum += p;
+            p = nibbles[(addr >> 24) & 0xf];
+            putchar(p); checksum += p;
+        case 2:
+            p = nibbles[(addr >> 20) & 0xf];
+            putchar(p); checksum += p;
+            p = nibbles[(addr >> 16) & 0xf];
+            putchar(p); checksum += p;
+        case 1:
+            p = nibbles[(addr >> 12) & 0xf];
+            putchar(p); checksum += p;
+            p = nibbles[(addr >> 8) & 0xf];
+            putchar(p); checksum += p;
+            p = nibbles[(addr >> 4) & 0xf];
+            putchar(p); checksum += p;
+            p = nibbles[(addr >> 0) & 0xf];
+            putchar(p); checksum += p;
             break;
     }
 
     for(; dlen > 0; dlen--, data++) {
-        *p = nibbles[(*data >> 4) & 0xf], checksum += *p++;
-        *p = nibbles[*data & 0xf], checksum += *p++;
+        p = nibbles[(*data >> 4) & 0xf];
+        putchar(p); checksum += p;
+        p = nibbles[*data & 0xf];
+        putchar(p); checksum += p;
     }
-    *p = nibbles[(checksum >> 4) & 0xf], checksum += *p++;
-    *p = nibbles[checksum & 0xf], checksum += *p++;
+    p = nibbles[(checksum >> 4) & 0xf];
+    putchar(p);
+    p = nibbles[checksum & 0xf];
+    putchar(p);
 
-    *p++ = '\n';
-    *p = '\0';
-
-    /* low level send */
-    puts((const char*)buf);
+    putchar('\r');
+    putchar('\n');
 }
 
-void crush_indicate(void *addr, void* data, int length)
+/**
+ * \brief Send an indicate of value at addr
+ * \param[in] addr Address of memory to send
+ * \param[in] length How many bytes to send
+ */
+void crush_indicate(void *addr, int length)
 {
-    crush_send('I', (uint32_t)addr, data, length);
+    crush_send('I', (uint32_t)addr, addr, length);
 }
+
+/**
+ * \brief Send Indication of a variable's value
+ * \param[in] var Variable to send
+ */
+#define CRUSH_INDICATE(var) crush_indicate(&(var), sizeof(var))
 
 /* vim: set ai cin et sw=4 ts=4 : */
