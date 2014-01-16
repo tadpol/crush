@@ -187,9 +187,9 @@ void crush_send(uint8_t cmd, uint32_t addr, uint8_t *data, int dlen)
     int length;
 
     /* How big does it need to be to hold the address? */
-    type = 3;
-    if((addr & 0xffffff) == addr) type = 2; /* if it fits in 24 */
-    if((addr & 0xffff) == addr) type = 1; /* if it fits in 16 */
+    type = '3';
+    if((addr & 0xffffff) == addr) type = '2'; /* if it fits in 24 */
+    if((addr & 0xffff) == addr) type = '1'; /* if it fits in 16 */
 
     *p = cmd, checksum += *p++;
     *p = type, checksum += *p++;
@@ -202,13 +202,13 @@ void crush_send(uint8_t cmd, uint32_t addr, uint8_t *data, int dlen)
     *p = nibbles[length & 0xf], checksum += *p++;
 
     switch(type) {
-        case 3:
+        case '3':
             *p = nibbles[(addr >> 28) & 0xf], checksum += *p++;
             *p = nibbles[(addr >> 24) & 0xf], checksum += *p++;
-        case 2:
+        case '2':
             *p = nibbles[(addr >> 20) & 0xf], checksum += *p++;
             *p = nibbles[(addr >> 16) & 0xf], checksum += *p++;
-        case 1:
+        case '1':
             *p = nibbles[(addr >> 12) & 0xf], checksum += *p++;
             *p = nibbles[(addr >> 8) & 0xf], checksum += *p++;
             *p = nibbles[(addr >> 4) & 0xf], checksum += *p++;
