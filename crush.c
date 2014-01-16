@@ -7,7 +7,8 @@
 
 
 enum crush_parse_state_e {
-    crush_state_waiting_for_cmd = 0,
+    crush_state_waiting_for_b = 0,
+    crush_state_cmd,
     crush_state_type,
     crush_state_length_high,
     crush_state_length_low,
@@ -54,18 +55,22 @@ static int crush_fromnibble(int c)
 
 void crush_parse_char(int c)
 {
-    if(crush.state == crush_state_waiting_for_cmd) {
-        crush.type = 0;
-        crush.checksum = 0;
-        crush.length = 0;
-        crush.addr = 0;
+    if(crush.state == crush_state_waiting_for_b) {
+        if(c == '\b') {
+            crush.type = 0;
+            crush.checksum = 0;
+            crush.length = 0;
+            crush.addr = 0;
+            crush.state = crush_state_cmd;
+        }
+    } else if(crush.state == crush_state_cmd) {
         crush.state = crush_state_type;
         if(c == 'W' || c == 'R' || c == 'J') {
             crush.cmd = c;
             crush.checksum += c;
         } else {
-            crush.state = crush_state_waiting_for_cmd;
-            /* or not, just keep eating then. */
+            crush.state = crush_state_waiting_for_b;
+            crush_status |= crush_status_parse_error;
         }
     } else if(crush.state == crush_state_type) {
         if(c >= '1' && c <= '3') {
@@ -73,7 +78,7 @@ void crush_parse_char(int c)
             crush.checksum += c;
             crush.state = crush_state_length_high;
         } else {
-            crush.state = crush_state_waiting_for_cmd;
+            crush.state = crush_state_waiting_for_b;
             crush_status |= crush_status_parse_error;
         }
     } else if(crush.state == crush_state_length_high) {
@@ -82,7 +87,7 @@ void crush_parse_char(int c)
             crush.checksum += c;
             crush.state = crush_state_length_low;
         } else {
-            crush.state = crush_state_waiting_for_cmd;
+            crush.state = crush_state_waiting_for_b;
             crush_status |= crush_status_parse_error;
         }
     } else if(crush.state == crush_state_length_low) {
@@ -91,7 +96,7 @@ void crush_parse_char(int c)
             crush.checksum += c;
             crush.state = crush_state_addr;
         } else {
-            crush.state = crush_state_waiting_for_cmd;
+            crush.state = crush_state_waiting_for_b;
             crush_status |= crush_status_parse_error;
         }
     } else if(crush.state == crush_state_addr) {
@@ -107,7 +112,7 @@ void crush_parse_char(int c)
                 crush.wbk = crush_wbk;
             }
         } else {
-            crush.state = crush_state_waiting_for_cmd;
+            crush.state = crush_state_waiting_for_b;
             crush_status |= crush_status_parse_error;
         }
     } else if(crush.state == crush_state_wbk_high) {
@@ -117,7 +122,7 @@ void crush_parse_char(int c)
             crush.length --;
             crush.state = crush_state_wbk_low;
         } else {
-            crush.state = crush_state_waiting_for_cmd;
+            crush.state = crush_state_waiting_for_b;
             crush_status |= crush_status_parse_error;
         }
     } else if(crush.state == crush_state_wbk_low) {
@@ -133,12 +138,12 @@ void crush_parse_char(int c)
                 crush.state = crush_state_wbk_high;
             }
         } else {
-            crush.state = crush_state_waiting_for_cmd;
+            crush.state = crush_state_waiting_for_b;
             crush_status |= crush_status_parse_error;
         }
     } else if(crush.state == crush_state_checksum) {
         /* The sum of all the parts and the checksum should result in 0 */
-        crush.state = crush_state_waiting_for_cmd;
+        crush.state = crush_state_waiting_for_b;
         if(crush.checksum == 0) {
             crush_do_cmd(crush.cmd, crush.addr, crush_wbk, (crush.wbk - crush_wbk) -1);
         } else {
